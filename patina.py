@@ -21,18 +21,26 @@ Typical use
   # Vinyl simulation, recursive over a whole library
   python3 patina.py ~/Music -o ~/Music_vinyl --mode vinyl --recursive
 
+  # Cassette simulation, Dolby B tracking included
+  python3 patina.py "~/Music/Album" -o "~/Music/Album [cassette]" --preset cassette
+
   # Measure the harmonic spectrum produced (writes no files)
   python3 patina.py --analyze --mode tube --drive 0.4
 
 Models
 ------
-  tube    Single-ended triode: tanh with an asymmetric bias -> 2nd harmonic
-          dominance, growing with level, plus soft peak compression.
-  vinyl   Turntable chain: bass summed to mono below a corner frequency,
-          channel crosstalk, wow & flutter, tracking distortion (rising with
-          frequency), HF roll-off and, optionally, the surface artefacts:
-          rumble, hiss, clicks and pops.
-  both    vinyl followed by tube (turntable -> valve preamp).
+  tube      Single-ended triode: tanh with an asymmetric bias -> 2nd harmonic
+            dominance, growing with level, plus soft peak compression.
+  vinyl     Turntable chain: bass summed to mono below a corner frequency,
+            channel crosstalk, wow & flutter, tracking distortion (rising
+            with frequency), HF roll-off and, optionally, the surface
+            artefacts: rumble, hiss, clicks and pops.
+  cassette  Tape chain: crosstalk, wow & flutter, tape saturation, bass-EQ
+            bump, HF roll-off, head azimuth loss and, optionally, tape hiss
+            (with simulated Dolby B/C tracking) and print-through.
+  vinyl-tube     vinyl followed by tube (turntable -> valve preamp).
+                 ('both' is a deprecated alias, from before cassette existed.)
+  cassette-tube  cassette followed by tube (tape deck -> valve preamp).
 
 Main parameters
 ---------------
@@ -41,8 +49,9 @@ Main parameters
                 0 = odd harmonics only, 0.2-0.4 = 2nd harmonic dominance.
   --mix         Percentage of processed signal (100 = fully wet).
   --oversample  Anti-aliasing oversampling factor (default 8).
-  --tube-drive  In mode 'both', drive of the valve stage that follows the
-  --tube-bias   whole vinyl chain (see 'both' in PRESETS).
+  --tube-drive  In modes 'vinyl-tube' and 'cassette-tube', drive of the
+  --tube-bias   valve stage that follows the whole vinyl/cassette chain
+                (see 'vinyl-tube' and 'cassette-tube' in PRESETS).
 
 MIT licence. Copyright (c) 2026 Carlo Mazzi. See LICENSE.
 """
@@ -86,7 +95,8 @@ class Params:
     crosstalk_db: float = -30.0  # channel bleed
     wow_pct: float = 0.12        # % of slow pitch modulation (0.55 Hz)
     flutter_pct: float = 0.03    # % of fast pitch modulation (8-10 Hz)
-    hf_rolloff_db: float = -1.5  # top-end shelf (at 10 kHz)
+    hf_rolloff_db: float = -1.5  # top-end shelf amount (vinyl and cassette)
+    hf_corner_hz: float = 10000.0  # top-end shelf corner (vinyl and cassette)
     tilt_db: float = 6.0         # HF pre-emphasis: frequency-dependent drive
     rumble_db: float = -80.0     # turntable rumble level (-999 = off)
     noise_db: float = -999.0     # surface hiss (-999 = off)
@@ -95,8 +105,19 @@ class Params:
     tick_db: float = -999.0      # periodic pop, once per revolution (-999 = off)
     rpm: float = 33.333          # platter speed, for the periodic pop
 
-    # --- second valve stage (mode 'both' only) ---
-    tube_drive: float = 0.30     # drive of the valve stage after the vinyl chain
+    # --- cassette ---
+    hiss_db: float = -999.0      # tape hiss, broadband and top-heavy (-999 = off)
+    lf_bump_hz: float = 90.0     # head-bump / bass-EQ corner
+    lf_bump_db: float = 0.0      # boost below lf_bump_hz (0 = flat)
+    azimuth_db: float = 0.0      # extra HF loss from head misalignment (0 = off)
+    azimuth_corner_hz: float = 6000.0
+    dolby_type: str = "off"      # 'off', 'b' or 'c': simulated NR tracking
+    dolby_mismatch_pct: float = 15.0  # 0 = perfect tracking, 100 = no reduction
+    print_db: float = -999.0     # print-through / pre-echo level (-999 = off)
+    print_ms: float = 150.0      # how far ahead of the sound it is heard
+
+    # --- second valve stage (modes 'vinyl-tube' / 'cassette-tube' only) ---
+    tube_drive: float = 0.30     # drive of the valve stage after the vinyl/cassette chain
     tube_bias: float = 0.28      # asymmetry of that stage
 
     # --- output ---
@@ -119,9 +140,36 @@ PRESETS = {
                           flutter_pct=0.14, crosstalk_db=-18.0,
                           noise_db=-54.0, rumble_db=-62.0, click_rate=14.0,
                           click_db=-34.0, tick_db=-30.0, hf_rolloff_db=-3.5),
-    "both":       dict(mode="both", drive=0.30, bias=0.30,
+    "vinyl-tube": dict(mode="vinyl-tube", drive=0.30, bias=0.30,
                        tube_drive=0.30, tube_bias=0.28),
+    "cassette-chrome": dict(mode="cassette", drive=0.15, bias=0.10,
+                       hiss_db=-58.0, hf_corner_hz=15000.0, hf_rolloff_db=-2.0,
+                       lf_bump_hz=60.0, lf_bump_db=0.5, wow_pct=0.08,
+                       flutter_pct=0.06, crosstalk_db=-38.0,
+                       dolby_type="b", dolby_mismatch_pct=5.0),
+    "cassette":   dict(mode="cassette", drive=0.25, bias=0.15,
+                       hiss_db=-50.0, hf_corner_hz=11000.0, hf_rolloff_db=-5.0,
+                       lf_bump_hz=90.0, lf_bump_db=1.5, wow_pct=0.15,
+                       flutter_pct=0.12, crosstalk_db=-35.0,
+                       dolby_type="b", dolby_mismatch_pct=15.0),
+    "cassette-worn": dict(mode="cassette", drive=0.40, bias=0.20,
+                       hiss_db=-42.0, hf_corner_hz=8000.0, hf_rolloff_db=-9.0,
+                       lf_bump_hz=100.0, lf_bump_db=2.5, wow_pct=0.35,
+                       flutter_pct=0.30, crosstalk_db=-28.0, azimuth_db=-4.0,
+                       azimuth_corner_hz=5000.0, dolby_type="b",
+                       dolby_mismatch_pct=40.0, print_db=-38.0, print_ms=160.0),
+    "cassette-no-dolby": dict(mode="cassette", drive=0.30, bias=0.18,
+                       hiss_db=-46.0, hf_corner_hz=12000.0, hf_rolloff_db=-4.0,
+                       lf_bump_hz=85.0, lf_bump_db=1.5, wow_pct=0.15,
+                       flutter_pct=0.12, crosstalk_db=-33.0, dolby_type="off"),
+    "cassette-tube": dict(mode="cassette-tube", drive=0.25, bias=0.15,
+                       hiss_db=-50.0, hf_corner_hz=11000.0, hf_rolloff_db=-5.0,
+                       lf_bump_hz=90.0, lf_bump_db=1.5, wow_pct=0.15,
+                       flutter_pct=0.12, crosstalk_db=-35.0, dolby_type="b",
+                       dolby_mismatch_pct=15.0, tube_drive=0.30, tube_bias=0.28),
 }
+
+PRESETS["both"] = PRESETS["vinyl-tube"]  # deprecated alias, pre-cassette name
 
 
 # --------------------------------------------------------------------------
@@ -207,6 +255,93 @@ def crosstalk(x: np.ndarray, db: float) -> np.ndarray:
     out[:, 0] = x[:, 0] + c * x[:, 1]
     out[:, 1] = x[:, 1] + c * x[:, 0]
     return out / (1.0 + c)
+
+
+def lf_shelf_filter(x: np.ndarray, fs: float, db: float, corner: float = 90.0):
+    """First-order low shelf: +db below corner, unity above (a bass EQ / head
+    bump). The mirror image of tilt_filter, which shelves the top end."""
+    if abs(db) < 1e-6:
+        return x
+    g = 10.0 ** (db / 20.0)
+    w = np.tan(np.pi * corner / fs)
+    c = (1.0 - w) / (1.0 + w)
+    lo = _onepole_lp(x, c)
+    hi = x - lo
+    lo *= g
+    lo += hi
+    return lo
+
+
+def azimuth_loss(x: np.ndarray, fs: float, db: float, corner: float = 6000.0):
+    """Head azimuth misalignment: extra high-frequency loss, worse on one
+    channel than the other because consumer decks are rarely perfectly
+    aligned. A true azimuth error is a few microseconds of inter-channel
+    delay, comb-filtering the top end away; this is a cheaper stand-in with
+    the same audible result — duller, narrower stereo highs."""
+    if x.ndim < 2 or x.shape[1] < 2 or db >= 0:
+        return x
+    out = np.empty_like(x)
+    out[:, 0] = tilt_filter(x[:, 0], fs, db * 0.4, corner=corner)
+    out[:, 1] = tilt_filter(x[:, 1], fs, db, corner=corner)
+    return out
+
+
+def tape_hiss(y: np.ndarray, fs: float, hiss_db: float, dolby_type: str,
+             mismatch_pct: float, rng: np.random.Generator) -> np.ndarray:
+    """Tape hiss, optionally run through a simulated Dolby B/C tracking.
+
+    Real Dolby is a sliding-band compander: quiet high-frequency content is
+    boosted going onto the tape and pulled back down on playback by the same
+    amount, taking the hiss picked up in that pass down with it whenever the
+    programme is loud. A decoder that tracks perfectly is inaudible; get the
+    type wrong, or the calibration slightly off, and the residual
+    cancellation error is heard as the noise floor "breathing" in time with
+    the music — `mismatch_pct` sets how much of the ideal tracking is missed
+    (0 = perfect and inaudible, 100 = no reduction at all).
+    """
+    if hiss_db <= -200.0:
+        return np.zeros_like(y)
+    n, nch = y.shape
+    amp = 10.0 ** (hiss_db / 20.0)
+    hiss = rng.standard_normal((n, nch))
+    sos = butter(1, 1200.0 / (fs / 2.0), btype="highpass", output="sos")
+    hiss = amp * sosfilt(sos, hiss, axis=0)
+
+    if dolby_type == "off":
+        return hiss
+
+    depth = 0.6 if dolby_type == "b" else 0.85  # 'c' tracks a wider band, deeper
+    sos_hf = butter(2, 2500.0 / (fs / 2.0), btype="highpass", output="sos")
+    hf = sosfilt(sos_hf, y, axis=0)
+    env = np.abs(hf).mean(axis=1)
+    c = np.exp(-1.0 / (0.020 * fs))          # ~20 ms follower, Dolby's own ballpark
+    env = _onepole_lp(env, c)
+    peak = np.max(env) or 1.0
+    env /= peak
+
+    ideal = 1.0 / (1.0 + depth * env)        # decoder gain: down when the music is loud
+    miss = np.clip(mismatch_pct, 0.0, 100.0) / 100.0
+    gain = 1.0 + (ideal - 1.0) * (1.0 - miss)  # imperfect cancellation
+    return hiss * gain[:, None]
+
+
+def print_through(y: np.ndarray, fs: float, db: float,
+                  delay_ms: float) -> np.ndarray:
+    """Print-through: a faint, muffled copy of a loud passage transferred
+    magnetically onto the adjacent tape layer, heard *before* the passage
+    itself. Pre-echo dominates over post-echo because forward masking is
+    much weaker than backward masking, so only the pre-echo is modelled."""
+    if db <= -200.0 or delay_ms <= 0:
+        return np.zeros_like(y)
+    d = int(delay_ms * 1e-3 * fs)
+    if d <= 0 or d >= y.shape[0]:
+        return np.zeros_like(y)
+    amp = 10.0 ** (db / 20.0)
+    sos = butter(2, 4000.0 / (fs / 2.0), btype="lowpass", output="sos")
+    lp = sosfilt(sos, y, axis=0)
+    echo = np.zeros_like(y)
+    echo[:-d] = lp[d:] * amp
+    return echo
 
 
 def wow_flutter(x: np.ndarray, fs: float, wow_pct: float,
@@ -374,9 +509,10 @@ def process(x: np.ndarray, fs: float, p: Params, seed: int = 0) -> np.ndarray:
 
     rms_in = float(np.sqrt(np.mean(y ** 2))) if p.match_rms else 0.0
 
-    # --- base rate pre-processing (vinyl) ---
-    if p.mode in ("vinyl", "both"):
+    # --- base rate pre-processing (vinyl / cassette) ---
+    if p.mode in ("vinyl", "vinyl-tube"):
         y = bass_to_mono(y, fs, p.bass_mono_hz)
+    if p.mode in ("vinyl", "vinyl-tube", "cassette", "cassette-tube"):
         y = crosstalk(y, p.crosstalk_db)
 
     # --- oversampled domain: wow/flutter and the non-linearity ---
@@ -385,11 +521,11 @@ def process(x: np.ndarray, fs: float, p: Params, seed: int = 0) -> np.ndarray:
     if os_factor > 1:
         y = resample_poly(y, os_factor, 1, axis=0)
 
-    if p.mode in ("vinyl", "both"):
+    if p.mode in ("vinyl", "vinyl-tube", "cassette", "cassette-tube"):
         y = wow_flutter(y, fs_os, p.wow_pct, p.flutter_pct, rng)
 
     if p.drive > 0:
-        if p.mode in ("vinyl", "both") and p.tilt_db > 0:
+        if p.mode in ("vinyl", "vinyl-tube") and p.tilt_db > 0:
             # tracking distortion rises with frequency:
             # pre-emphasis -> waveshaper -> de-emphasis
             y = tilt_filter(y, fs_os, +p.tilt_db)
@@ -406,8 +542,15 @@ def process(x: np.ndarray, fs: float, p: Params, seed: int = 0) -> np.ndarray:
     # --- base rate post-processing ---
     y = dc_block(y, fs)
 
-    if p.mode in ("vinyl", "both") and p.hf_rolloff_db < 0:
-        y = tilt_filter(y, fs, p.hf_rolloff_db, corner=10000.0)
+    if p.mode in ("vinyl", "vinyl-tube", "cassette", "cassette-tube") \
+            and p.hf_rolloff_db < 0:
+        y = tilt_filter(y, fs, p.hf_rolloff_db, corner=p.hf_corner_hz)
+
+    if p.mode in ("cassette", "cassette-tube"):
+        if p.lf_bump_db != 0.0:
+            y = lf_shelf_filter(y, fs, p.lf_bump_db, corner=p.lf_bump_hz)
+        if p.azimuth_db < 0.0:
+            y = azimuth_loss(y, fs, p.azimuth_db, corner=p.azimuth_corner_hz)
 
     # --- gain compensation ---
     # This has to happen on the musical programme alone: noise and clicks are
@@ -419,18 +562,23 @@ def process(x: np.ndarray, fs: float, p: Params, seed: int = 0) -> np.ndarray:
             y *= rms_in / rms_out
 
     # --- additive surface artefacts ---
-    if p.mode in ("vinyl", "both"):
+    if p.mode in ("vinyl", "vinyl-tube"):
         y = y + surface_noise(y.shape[0], y.shape[1], fs,
                               p.noise_db, p.rumble_db, rng)
         y = y + clicks(y.shape[0], y.shape[1], fs, p.click_rate, p.click_db,
                        p.tick_db, p.rpm, rng)
 
-    # --- valve stage, downstream of the whole turntable chain ---
-    # This is the physical order: the cartridge output, hiss and clicks
-    # included, is what reaches the preamp, so the valve stage colours those
-    # too. It needs its own oversampled round: the additive artefacts are
-    # generated at base rate, after the first one.
-    if p.mode == "both" and p.tube_drive > 0:
+    if p.mode in ("cassette", "cassette-tube"):
+        y = y + tape_hiss(y, fs, p.hiss_db, p.dolby_type,
+                          p.dolby_mismatch_pct, rng)
+        y = y + print_through(y, fs, p.print_db, p.print_ms)
+
+    # --- valve stage, downstream of the whole turntable/tape chain ---
+    # This is the physical order: the cartridge/tape-head output, hiss and
+    # clicks included, is what reaches the preamp, so the valve stage
+    # colours those too. It needs its own oversampled round: the additive
+    # artefacts are generated at base rate, after the first one.
+    if p.mode in ("vinyl-tube", "cassette-tube") and p.tube_drive > 0:
         rms_pre = float(np.sqrt(np.mean(y ** 2)))
         if os_factor > 1:
             y = resample_poly(y, os_factor, 1, axis=0)
@@ -579,8 +727,13 @@ def collect_files(root: Path, recursive: bool) -> list:
     if root.is_file():
         return [root]
     it = root.rglob("*") if recursive else root.glob("*")
+    # "._Name.ext" AppleDouble sidecars: macOS writes these on non-HFS+
+    # volumes (network shares, exFAT, ...) to hold the resource fork /
+    # extended attributes. They carry the same extension as the real file
+    # but are not audio, so soundfile fails to open them.
     return sorted(f for f in it
-                  if f.is_file() and f.suffix.lower() in AUDIO_EXT)
+                  if f.is_file() and f.suffix.lower() in AUDIO_EXT
+                  and not f.name.startswith("._"))
 
 
 EXTRA_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",   # artwork
@@ -600,7 +753,7 @@ def copy_extras(src_root: Path, dst_root: Path, files: list) -> int:
     for d in dirs:
         rel = d.relative_to(src_root) if d != src_root else Path(".")
         for img in d.glob("*"):
-            if img.suffix.lower() in EXTRA_EXT:
+            if img.suffix.lower() in EXTRA_EXT and not img.name.startswith("._"):
                 out = dst_root / rel / img.name
                 out.parent.mkdir(parents=True, exist_ok=True)
                 if not out.exists():
@@ -632,13 +785,14 @@ def analyze(p: Params, fs: int = 44100, f0: float = 1000.0,
 
     q = Params(**{**asdict(p), "match_rms": False, "headroom_db": 0.0,
                   "wow_pct": 0.0, "flutter_pct": 0.0,
-                  "noise_db": -999.0, "rumble_db": -999.0})
+                  "noise_db": -999.0, "rumble_db": -999.0,
+                  "hiss_db": -999.0, "print_db": -999.0})
     y = process(x, fs, q)[pad:pad + n, 0]
 
     spec = np.abs(np.fft.rfft(y)) * 2.0 / n
     fund = spec[k]
     tube = (f" tube_drive={q.tube_drive} tube_bias={q.tube_bias}"
-            if q.mode == "both" else "")
+            if q.mode in ("vinyl-tube", "cassette-tube") else "")
     print(f"\nHarmonic analysis — mode={q.mode} drive={q.drive} "
           f"bias={q.bias}{tube} oversample={q.oversample}")
     print(f"Sine at {f0:.1f} Hz, {level_db:.1f} dBFS, fs={fs} Hz\n")
@@ -687,8 +841,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Destination directory (default: <input>_<mode>)")
     p.add_argument("--preset", choices=list(PRESETS),
                    help="Starting preset; individual options override it")
-    p.add_argument("--mode", choices=["tube", "vinyl", "both"],
-                   help="Coloration model (default: tube)")
+    p.add_argument("--mode",
+                   choices=["tube", "vinyl", "vinyl-tube", "cassette",
+                            "cassette-tube", "both"],
+                   help="Coloration model (default: tube). 'both' is a "
+                        "deprecated alias for 'vinyl-tube'")
 
     g = p.add_argument_group("non-linearity")
     g.add_argument("--drive", type=float, metavar="0-1",
@@ -714,7 +871,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--flutter-pct", type=float, metavar="PCT",
                    help="Fast pitch modulation (default 0.03)")
     g.add_argument("--hf-rolloff-db", type=float, metavar="DB",
-                   help="Top-end shelf at 10 kHz (default -1.5)")
+                   help="Top-end shelf amount, vinyl and cassette "
+                        "(default -1.5)")
+    g.add_argument("--hf-corner-hz", type=float, metavar="HZ",
+                   help="Top-end shelf corner, vinyl and cassette "
+                        "(default 10000)")
     g.add_argument("--tilt-db", type=float, metavar="DB",
                    help="HF pre-emphasis: distortion rising with frequency "
                         "(default 6)")
@@ -733,10 +894,33 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--rpm", type=float, metavar="RPM",
                    help="Platter speed for the periodic pop (default 33.333)")
 
-    g = p.add_argument_group("valve stage (mode 'both' only)")
+    g = p.add_argument_group("cassette")
+    g.add_argument("--hiss-db", type=float, metavar="DB",
+                   help="Tape hiss, broadband and top-heavy (default off)")
+    g.add_argument("--lf-bump-hz", type=float, metavar="HZ",
+                   help="Bass bump / head-EQ corner (default 90)")
+    g.add_argument("--lf-bump-db", type=float, metavar="DB",
+                   help="Bass bump amount below lf-bump-hz (default 0)")
+    g.add_argument("--azimuth-db", type=float, metavar="DB",
+                   help="Extra HF loss from head misalignment, worse on one "
+                        "channel (default 0 = off)")
+    g.add_argument("--azimuth-corner-hz", type=float, metavar="HZ",
+                   help="Corner of the azimuth HF loss (default 6000)")
+    g.add_argument("--dolby-type", choices=["off", "b", "c"],
+                   help="Simulated noise-reduction tracking (default off)")
+    g.add_argument("--dolby-mismatch-pct", type=float, metavar="PCT",
+                   help="How far the simulated decoder tracking misses the "
+                        "ideal (0 = perfect, 100 = no reduction; default 15)")
+    g.add_argument("--print-db", type=float, metavar="DB",
+                   help="Print-through / pre-echo level (default off)")
+    g.add_argument("--print-ms", type=float, metavar="MS",
+                   help="Pre-echo lead time (default 150)")
+
+    g = p.add_argument_group("valve stage (modes 'vinyl-tube' and "
+                             "'cassette-tube' only)")
     g.add_argument("--tube-drive", type=float, metavar="0-1",
                    help="Drive of the valve stage placed after the whole "
-                        "vinyl chain (default 0.30, 0 = off)")
+                        "vinyl or cassette chain (default 0.30, 0 = off)")
     g.add_argument("--tube-bias", type=float, metavar="0-1",
                    help="Asymmetry of that stage (default 0.28)")
 
@@ -780,6 +964,8 @@ def params_from_args(args) -> Params:
         v = getattr(args, field, None)
         if v is not None:
             setattr(p, field, v)
+    if p.mode == "both":          # deprecated alias, pre-cassette name
+        p.mode = "vinyl-tube"
     return p
 
 

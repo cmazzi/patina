@@ -39,12 +39,13 @@ GROUPS = [
         ("mix",           "Mix (%)"),
         ("oversample",    "Oversampling"),
     ]),
-    ("Vinyl", [
+    ("Vinyl / Cassette", [
         ("bass_mono_hz",  "Bass to mono below (Hz)"),
         ("crosstalk_db",  "Crosstalk (dB)"),
         ("wow_pct",       "Wow (%)"),
         ("flutter_pct",   "Flutter (%)"),
         ("hf_rolloff_db", "HF roll-off (dB)"),
+        ("hf_corner_hz",  "HF roll-off corner (Hz)"),
         ("tilt_db",       "Tracking tilt (dB)"),
         ("rumble_db",     "Rumble (dB)"),
         ("noise_db",      "Surface hiss (dB)"),
@@ -53,7 +54,18 @@ GROUPS = [
         ("tick_db",       "Periodic pop (dB)"),
         ("rpm",           "Platter speed (rpm)"),
     ]),
-    ("Valve stage (mode 'both')", [
+    ("Cassette", [
+        ("hiss_db",       "Tape hiss (dB)"),
+        ("lf_bump_hz",    "Bass bump at (Hz)"),
+        ("lf_bump_db",    "Bass bump (dB)"),
+        ("azimuth_db",    "Azimuth HF loss (dB)"),
+        ("azimuth_corner_hz", "Azimuth corner (Hz)"),
+        ("dolby_type",    "Dolby tracking"),
+        ("dolby_mismatch_pct", "Dolby mismatch (%)"),
+        ("print_db",      "Print-through (dB)"),
+        ("print_ms",      "Print-through lead (ms)"),
+    ]),
+    ("Valve stage ('vinyl-tube' / 'cassette-tube')", [
         ("tube_drive",    "Tube drive (0-1)"),
         ("tube_bias",     "Tube bias (0-1)"),
     ]),
@@ -63,6 +75,8 @@ GROUPS = [
 ]
 
 INT_FIELDS = {"oversample"}
+STR_FIELDS = {"dolby_type"}
+CHOICES = {"dolby_type": ["off", "b", "c"]}
 HINT = "-999 = off"
 
 
@@ -127,15 +141,18 @@ class App(ttk.Frame):
         self.mode = tk.StringVar(value="tube")
 
         ttk.Label(head, text="Preset").pack(side="left")
+        # "both" is a deprecated alias for "vinyl-tube", kept in PRESETS only
+        # for old command lines -- no need to show it twice in the dropdown.
         cb = ttk.Combobox(head, textvariable=self.preset, width=15,
-                          state="readonly", values=list(PRESETS))
+                          state="readonly",
+                          values=[k for k in PRESETS if k != "both"])
         cb.pack(side="left", padx=(6, 16))
         cb.bind("<<ComboboxSelected>>", lambda _e: self.apply_preset())
 
         ttk.Label(head, text="Mode").pack(side="left")
-        ttk.Combobox(head, textvariable=self.mode, width=8, state="readonly",
-                     values=["tube", "vinyl", "both"]).pack(side="left",
-                                                            padx=(6, 16))
+        ttk.Combobox(head, textvariable=self.mode, width=13, state="readonly",
+                     values=["tube", "vinyl", "vinyl-tube", "cassette",
+                             "cassette-tube"]).pack(side="left", padx=(6, 16))
         ttk.Button(head, text="Reset to preset",
                    command=self.apply_preset).pack(side="left")
 
@@ -152,9 +169,14 @@ class App(ttk.Frame):
                 ttk.Label(g, text=label).grid(row=row, column=0, sticky="w")
                 v = tk.StringVar(value=str(defaults[name]))
                 self.vars[name] = v
-                ttk.Entry(g, textvariable=v, width=8).grid(row=row, column=1,
-                                                           sticky="e", padx=(6, 0))
-            if title == "Vinyl":
+                if name in CHOICES:
+                    ttk.Combobox(g, textvariable=v, width=6, state="readonly",
+                                values=CHOICES[name]).grid(
+                        row=row, column=1, sticky="e", padx=(6, 0))
+                else:
+                    ttk.Entry(g, textvariable=v, width=8).grid(
+                        row=row, column=1, sticky="e", padx=(6, 0))
+            if title in ("Vinyl / Cassette", "Cassette"):
                 ttk.Label(g, text=HINT, foreground="grey").grid(
                     row=len(fields), column=0, columnspan=2, sticky="w",
                     pady=(4, 0))
@@ -282,10 +304,11 @@ class App(ttk.Frame):
             text = var.get().strip()
             if not text:
                 raise ValueError(f"Empty value for '{name}'.")
-            try:
-                int(text) if name in INT_FIELDS else float(text)
-            except ValueError:
-                raise ValueError(f"'{text}' is not a number ({name}).")
+            if name not in STR_FIELDS:
+                try:
+                    int(text) if name in INT_FIELDS else float(text)
+                except ValueError:
+                    raise ValueError(f"'{text}' is not a number ({name}).")
             cmd += ["--" + name.replace("_", "-"), text]
         cmd.append("--match-rms" if self.match_rms.get() else "--no-match-rms")
         cmd.append("--dither" if self.dither.get() else "--no-dither")
@@ -387,7 +410,7 @@ class App(ttk.Frame):
 def main():
     root = tk.Tk()
     root.title("patina")
-    root.minsize(900, 640)
+    root.minsize(1150, 640)
     app = App(root)
     root.protocol("WM_DELETE_WINDOW",
                   lambda: (app.stop(), root.destroy()))

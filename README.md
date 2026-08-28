@@ -1,7 +1,7 @@
 # patina
 
-Analog coloration for digital music: tube harmonics and vinyl artefacts, applied
-to whole albums, with tags and artwork preserved.
+Analog coloration for digital music: tube harmonics, vinyl and cassette
+artefacts, applied to whole albums, with tags and artwork preserved.
 
 *Patina* is what time leaves on a surface. That is what this does to a
 recording — nothing is restored, something is added.
@@ -130,7 +130,12 @@ nothing else to install.
 | `vinyl` | Ordinary pressing, ordinary turntable |
 | `vinyl-worn` | Played a lot: hiss, rumble, 4 clicks per second |
 | `vinyl-trashed` | Charity shop copy: heavy crackle, a pop every revolution |
-| `both` | Turntable into a valve preamp: the full vinyl chain, then a valve stage |
+| `vinyl-tube` | Turntable into a valve preamp: the full vinyl chain, then a valve stage |
+| `cassette-chrome` | Fresh chrome/metal tape, Dolby B tracking almost perfect |
+| `cassette` | Ordinary ferric compact cassette, Dolby B |
+| `cassette-worn` | Old, oft-played tape: wow, hiss, mistracked Dolby, print-through |
+| `cassette-no-dolby` | Same tape played back with the decoder switched off: bright and hissy |
+| `cassette-tube` | Cassette deck into a valve preamp: the full tape chain, then a valve stage |
 
 Any preset is a starting point — individual options override it:
 
@@ -140,28 +145,50 @@ python3 patina.py ~/Music/Album --preset vinyl-worn --click-rate 8 --noise-db -5
 
 ### The valve stage after vinyl
 
-`--mode both` runs the complete vinyl chain and then a second waveshaper, with
-its own `--tube-drive` and `--tube-bias`. It sits at the end deliberately: what
-reaches a preamp is the cartridge output, hiss and clicks included, so the valve
-stage colours those too rather than being applied to clean music that then gets
-noise glued on top.
+`--mode vinyl-tube` runs the complete vinyl chain and then a second
+waveshaper, with its own `--tube-drive` and `--tube-bias`. It sits at the end
+deliberately: what reaches a preamp is the cartridge output, hiss and clicks
+included, so the valve stage colours those too rather than being applied to
+clean music that then gets noise glued on top.
+
+(`--mode both` / `--preset both` still work — they are the original name for
+this mode, from before cassette support existed, kept as a deprecated alias
+so old command lines do not break.)
 
 It has its own oversampled round, because the surface artefacts are generated at
-base rate after the first one, so `both` costs roughly a vinyl pass plus a tube
-pass. `--tube-drive 0` disables it and gives you plain vinyl back, bit for bit.
+base rate after the first one, so `vinyl-tube` costs roughly a vinyl pass plus a
+tube pass. `--tube-drive 0` disables it and gives you plain vinyl back, bit for
+bit.
 
 The two non-linearities add up. Measured at −6 dBFS, 1 kHz:
 
 | | THD | 2nd harmonic |
 |---|---|---|
 | `--preset vinyl` | 1.79 % | 1.73 % |
-| `--preset both` | 3.50 % | 3.38 % |
+| `--preset vinyl-tube` | 3.50 % | 3.38 % |
 
 So set `--drive` for the record and `--tube-drive` for the amplifier, and expect
 the sum:
 
 ```bash
-python3 patina.py ~/Music/Album --preset vinyl-trashed --mode both --tube-drive 0.2
+python3 patina.py ~/Music/Album --preset vinyl-trashed --mode vinyl-tube --tube-drive 0.2
+```
+
+### The valve stage after cassette
+
+Same idea, `--mode cassette-tube`: the complete tape chain — saturation, wow &
+flutter, EQ, hiss, Dolby, print-through — followed by a second waveshaper. It
+sits downstream for the same reason as `vinyl-tube`: the tape hiss and
+print-through should pick up the valve's colour too, not just the clean signal
+underneath them.
+
+| | THD | 2nd harmonic |
+|---|---|---|
+| `--preset cassette` | 0.67 % | 0.59 % |
+| `--preset cassette-tube` | 2.26 % | 2.13 % |
+
+```bash
+python3 patina.py ~/Music/Album --preset cassette-worn --mode cassette-tube --tube-drive 0.2
 ```
 
 ## The vinyl model
@@ -202,6 +229,50 @@ the centre of the image.
 The level is **absolute**, not relative to the music. Clicks stay masked in loud
 passages and emerge in quiet ones — which is what a record does, and which comes
 for free from the fact that they are additive.
+
+## The cassette model
+
+Same idea as vinyl — most of what you hear from a cassette is not distortion —
+but a different transport and a different set of failure modes:
+
+| Artefact | How it is modelled | Option |
+|---|---|---|
+| Channel crosstalk | Head-gap bleed | `--crosstalk-db` |
+| Wow & flutter | Same modulated resampling as vinyl, tuned to a capstan drive instead of a platter | `--wow-pct`, `--flutter-pct` |
+| Tape saturation | Level-dependent, not frequency-tilted like vinyl tracking distortion | `--drive`, `--bias` |
+| Bass bump | Low shelf around the head-EQ corner | `--lf-bump-hz`, `--lf-bump-db` |
+| HF roll-off | Shelf at the tape/head bandwidth limit | `--hf-rolloff-db`, `--hf-corner-hz` |
+| Head azimuth loss | Extra top-end loss, worse on one channel — decks are rarely perfectly aligned | `--azimuth-db`, `--azimuth-corner-hz` |
+| Tape hiss | Broadband, top-heavy noise | `--hiss-db` |
+| Dolby tracking | See below | `--dolby-type`, `--dolby-mismatch-pct` |
+| Print-through | See below | `--print-db`, `--print-ms` |
+
+### Dolby B/C
+
+Real Dolby noise reduction is a sliding-band compander: quiet high-frequency
+content is boosted going onto the tape, and pulled back down by the same
+amount on playback — taking the hiss recorded in that pass down with it
+whenever the music is loud. A decoder that tracks the encoder perfectly is
+inaudible. A decoder that does not — wrong type, or the level slightly off —
+leaves a residual gain error that is heard as the noise floor **breathing** in
+time with the music, the single most recognisable Dolby artefact.
+
+`--dolby-type` picks `off` (plain tape hiss, no tracking), `b` or `c` (`c`
+compresses a wider band, so a mismatch is more audible). `--dolby-mismatch-pct`
+sets how far the simulated decoder misses the ideal: 0 is perfect and
+inaudible, 100 is no reduction at all. `cassette-no-dolby` demonstrates the
+other classic case — a tape encoded with Dolby but played back with the
+decoder off, the bright, hissy sound of a boombox mixtape without noise
+reduction.
+
+### Print-through
+
+A faint, muffled copy of a loud passage, transferred magnetically onto the
+tape layer wound next to it, heard *before* the passage itself rather than
+after. Only the pre-echo is modelled — forward masking is much weaker than
+backward masking, so on a real tape that is the audible one.
+`--print-ms` sets how far ahead of the sound it is heard, `--print-db` its
+level.
 
 ---
 
@@ -256,7 +327,7 @@ Measured on an Apple M-series laptop with 16 GB of RAM, a 42-minute album of
 |---|---|
 | `tube` | 21 s |
 | `vinyl` | 50 s |
-| `both` | 63 s |
+| `vinyl-tube` | 63 s |
 
 In the oversampled domain a four-minute track is 85 million samples per channel,
 so memory, not CPU, is the limit. Two things follow from that:
@@ -274,9 +345,9 @@ peaks at −0.14 dBFS and sits near full scale continuously, the drive is applie
 almost uniformly instead of dynamically, which is the opposite of what a valve
 does. Well-recorded material with real dynamics responds far better.
 
-In vinyl mode, `--mix` below 100 should be used with wow and flutter set to zero.
-The dry path is not pitch-modulated, so blending it with the wet path produces a
-chorus effect.
+In vinyl and cassette mode, `--mix` below 100 should be used with wow and
+flutter set to zero. The dry path is not pitch-modulated, so blending it with
+the wet path produces a chorus effect.
 
 ---
 
