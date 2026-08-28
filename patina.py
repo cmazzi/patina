@@ -291,9 +291,14 @@ def tape_hiss(y: np.ndarray, fs: float, hiss_db: float, dolby_type: str,
     """Tape hiss, optionally run through a simulated Dolby B/C tracking.
 
     Real Dolby is a sliding-band compander: quiet high-frequency content is
-    boosted going onto the tape and pulled back down on playback by the same
-    amount, taking the hiss picked up in that pass down with it whenever the
-    programme is loud. A decoder that tracks perfectly is inaudible; get the
+    boosted going onto the tape, and pulled back down by the same amount on
+    playback. That decoder cut lands hardest exactly when the programme is
+    quiet — which is also where the hiss picked up in that pass would
+    otherwise be most audible, and is the single most noticeable thing a
+    working Dolby decoder does: the noise floor visibly drops in pauses.
+    During loud passages the decoder is near unity gain (nothing to
+    correct), so the hiss there is untouched, but psychoacoustic masking
+    hides it anyway. A decoder that tracks perfectly is inaudible; get the
     type wrong, or the calibration slightly off, and the residual
     cancellation error is heard as the noise floor "breathing" in time with
     the music — `mismatch_pct` sets how much of the ideal tracking is missed
@@ -319,7 +324,7 @@ def tape_hiss(y: np.ndarray, fs: float, hiss_db: float, dolby_type: str,
     peak = np.max(env) or 1.0
     env /= peak
 
-    ideal = 1.0 / (1.0 + depth * env)        # decoder gain: down when the music is loud
+    ideal = 1.0 - depth * (1.0 - env)        # decoder gain: down when the music is quiet
     miss = np.clip(mismatch_pct, 0.0, 100.0) / 100.0
     gain = 1.0 + (ideal - 1.0) * (1.0 - miss)  # imperfect cancellation
     return hiss * gain[:, None]
