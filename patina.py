@@ -405,6 +405,16 @@ def wow_flutter(x: np.ndarray, fs: float, wow_pct: float,
     return out
 
 
+# Crest factor of the 45 Hz low-passed noise the rumble is made of, measured
+# over a track of a few minutes. Used to keep rumble_db referred to the peak,
+# as it was when the rumble was normalised on its peak directly.
+_RUMBLE_CREST = 4.7
+
+# Weight of the per-channel independent part of the rumble, on top of the
+# common mechanical one: 0.35 leaves about 0.89 correlation between channels.
+_RUMBLE_INDEP = 0.35
+
+
 def surface_noise(n: int, nch: int, fs: float, noise_db: float,
                   rumble_db: float, rng: np.random.Generator) -> np.ndarray:
     """Surface hiss plus turntable rumble."""
@@ -415,12 +425,23 @@ def surface_noise(n: int, nch: int, fs: float, noise_db: float,
         sos = butter(1, 2000.0 / (fs / 2.0), btype="highpass", output="sos")
         out += amp * sosfilt(sos, hiss, axis=0)
     if rumble_db > -200.0:
-        amp = 10.0 ** (rumble_db / 20.0)
-        low = rng.standard_normal((n, nch))
+        # The rumble is the bearing and the platter shaking the whole
+        # cartridge: one mechanical signal, largely common to the two
+        # channels, not two independent noises. The small independent part
+        # stands for what the two groove walls do not share.
+        common = rng.standard_normal((n, 1))
+        indep = rng.standard_normal((n, nch))
+        low = common + _RUMBLE_INDEP * indep
         sos = butter(2, 45.0 / (fs / 2.0), btype="lowpass", output="sos")
         low = sosfilt(sos, low, axis=0)
-        peak = np.max(np.abs(low)) or 1.0
-        out += amp * low / peak
+        # Normalised on the RMS, not on the peak: the peak of a random
+        # sequence keeps growing with its length, so a peak normalisation
+        # made the rumble quieter the longer the file. _RUMBLE_CREST keeps
+        # rumble_db meaning what it always meant, a level referred to the
+        # peak on a track of a few minutes.
+        rms = low.std() or 1.0
+        amp = 10.0 ** (rumble_db / 20.0) / _RUMBLE_CREST
+        out += amp * low / rms
     return out
 
 
@@ -463,15 +484,22 @@ def clicks(n: int, nch: int, fs: float, rate: float, level_db: float,
     pops = [_click_template(fs, rng.uniform(2.0e-3, 6.0e-3),
                             300.0, 3500.0, rng) for _ in range(4)]
 
-    def scatter(pos: int, tpl: np.ndarray, amp: float) -> None:
+    def scatter(pos: int, tpl: np.ndarray, amp: float,
+                lead: int = -1) -> None:
         L = min(len(tpl), n - pos)
         if L <= 0:
             return
+        # the side the defect leans to. Drawn per event, so that the surface
+        # noise stays scattered over the image: with a fixed leading channel
+        # every click would be louder and earlier on the same side, and the
+        # whole crackle would pull to one speaker.
+        if lead < 0:
+            lead = int(rng.integers(nch))
         for ch in range(nch):
             # the same defect is heard on both channels, at slightly
             # different amplitudes and delays
-            g = amp * (1.0 if ch == 0 else rng.uniform(0.6, 1.0))
-            d = 0 if ch == 0 else int(rng.integers(0, 24))
+            g = amp * (1.0 if ch == lead else rng.uniform(0.6, 1.0))
+            d = 0 if ch == lead else int(rng.integers(0, 24))
             LL = min(L, n - pos - d)
             if LL > 0:
                 out[pos + d: pos + d + LL, ch] += g * tpl[:LL]
@@ -492,9 +520,12 @@ def clicks(n: int, nch: int, fs: float, rate: float, level_db: float,
         step = fs * 60.0 / rpm
         amp0 = 10.0 ** (tick_db / 20.0)
         tpl = pops[0]
+        # one defect in one spot of the groove: it keeps the same side
+        # on every revolution
+        lead = int(rng.integers(nch))
         pos = rng.uniform(0, step)
         while pos < n:
-            scatter(int(pos), tpl, amp0 * rng.uniform(0.8, 1.2))
+            scatter(int(pos), tpl, amp0 * rng.uniform(0.8, 1.2), lead)
             pos += step
 
     return out
